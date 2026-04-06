@@ -1,8 +1,13 @@
 services:
   claude:
-    build: .
+    build:
+      context: .
+      args:
+        ROS_DISTRO: ${ROS_DISTRO:-jazzy}
     stdin_open: true
     tty: true
+    # host network lets ROS2 DDS discovery work across containers / host
+    network_mode: host
     volumes:
       - .:/workspace
       - ./.claude-home/.claude:/home/claude/.claude

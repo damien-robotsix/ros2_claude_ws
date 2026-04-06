@@ -10,6 +10,14 @@ if [ "${1:-}" = "--fork" ]; then
     exec "$SCRIPT_DIR/fork-workspace.sh" "$@"
 fi
 
+# Parse --ros-distro flag (must come before any Claude args)
+ROS_DISTRO="${ROS_DISTRO:-jazzy}"
+if [ "${1:-}" = "--ros-distro" ]; then
+    ROS_DISTRO="$2"
+    shift 2
+fi
+export ROS_DISTRO
+
 # Build if needed
 docker compose build
 
@@ -21,6 +29,7 @@ mkdir -p "$SCRIPT_DIR/.claude-home/.claude" "$SCRIPT_DIR/.claude-home/.config/gh
 # non-zero exit from the container (Ctrl-C, Claude Code error) still
 # falls through to the post-run transcript sync below.
 docker run -it --rm \
+    --network host \
     -v "$SCRIPT_DIR:/workspace" \
     -v "$SCRIPT_DIR/.claude-home/.claude:/home/claude/.claude" \
     -v "$SCRIPT_DIR/.claude-home/.claude.json:/home/claude/.claude.json" \
