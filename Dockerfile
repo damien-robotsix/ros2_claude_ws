@@ -33,12 +33,11 @@ RUN npm install -g @anthropic-ai/claude-code
 # ── Initialize rosdep ───────────────────────────────────────────────
 RUN rosdep init || true
 
-# ── User setup ───────────────────────────────────────────────────────
-RUN useradd -m -s /bin/bash -u 1000 claude \
-    && mkdir -p /home/claude/.claude /home/claude/.config/gh \
-    && chown -R claude:claude /home/claude/.claude /home/claude/.config/gh
+# ── User setup (reuse the existing 'ubuntu' user from the base image) ─
+RUN mkdir -p /home/ubuntu/.claude /home/ubuntu/.config/gh \
+    && chown -R ubuntu:ubuntu /home/ubuntu/.claude /home/ubuntu/.config/gh
 
-USER claude
+USER ubuntu
 RUN rosdep update
 
 WORKDIR /workspace
@@ -47,8 +46,8 @@ WORKDIR /workspace
 ENV ROS_DISTRO=${ROS_DISTRO}
 
 # Source ROS2 setup in every shell
-RUN echo "source /opt/ros/${ROS_DISTRO}/setup.bash" >> /home/claude/.bashrc \
-    && echo '[ -f /workspace/install/setup.bash ] && source /workspace/install/setup.bash' >> /home/claude/.bashrc
+RUN echo "source /opt/ros/${ROS_DISTRO}/setup.bash" >> /home/ubuntu/.bashrc \
+    && echo '[ -f /workspace/install/setup.bash ] && source /workspace/install/setup.bash' >> /home/ubuntu/.bashrc
 
 ENTRYPOINT ["claude"]
 CMD ["--dangerously-skip-permissions"]

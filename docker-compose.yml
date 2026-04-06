@@ -10,7 +10,7 @@ services:
     network_mode: host
     volumes:
       - .:/workspace
-      - ./.claude-home/.claude:/home/claude/.claude
-      - ./.claude-home/.claude.json:/home/claude/.claude.json
-      - ./.claude-home/.config/gh:/home/claude/.config/gh
+      - ./.claude-home/.claude:/home/ubuntu/.claude
+      - ./.claude-home/.claude.json:/home/ubuntu/.claude.json
+      - ./.claude-home/.config/gh:/home/ubuntu/.config/gh
     working_dir: /workspace
