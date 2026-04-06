@@ -1,0 +1,87 @@
+name: Claude Code Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, ready_for_review, reopened]
+    # Optional: Only run on specific file changes
+    # paths:
+    #   - "src/**/*.ts"
+    #   - "src/**/*.tsx"
+    #   - "src/**/*.js"
+    #   - "src/**/*.jsx"
+
+jobs:
+  claude-review:
+    # Optional: Filter by PR author
+    # if: |
+    #   github.event.pull_request.user.login == 'external-contributor' ||
+    #   github.event.pull_request.user.login == 'new-developer' ||
+    #   github.event.pull_request.author_association == 'FIRST_TIME_CONTRIBUTOR'
+
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+      issues: read
+      id-token: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Inject CI sandbox rules into CLAUDE.md
+        # CI-only prompt injection. Keeps docs/ci-sandbox-rules.md as the
+        # single source of truth while leaving CLAUDE.md clean for local
+        # (Docker / IDE) runs that don't hit the allowlist or sandbox.
+        # Fixes the recurring pattern tracked in issues #27, #28, #29.
+        run: |
+          printf '\n\n' >> CLAUDE.md
+          cat docs/ci-sandbox-rules.md >> CLAUDE.md
+
+      - name: Resolve model from auto_tune_config.yml
+        id: model
+        run: |
+          alias=$(yq '.models.code_review // "opus"' auto_tune_config.yml)
+          id=$(yq ".model_aliases.\"$alias\" // \"$alias\"" auto_tune_config.yml)
+          echo "id=$id" >> "$GITHUB_OUTPUT"
+
+      - name: Run Claude Code Review
+        id: claude-review
+        uses: ./.github/actions/claude-code-retry
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          allowed_bots: 'claude'
+          plugin_marketplaces: 'https://github.com/anthropics/claude-code.git'
+          plugins: 'code-review@claude-code-plugins'
+          prompt: |
+            IMPORTANT: Before issuing any `gh pr`, `gh api`, or `git diff`
+            calls, run `python3 scripts/collect-pr-review-context.py ${{ github.event.pull_request.number }}`
+            and read the JSON it emits. It returns PR metadata, diff, linked
+            issues, comments, and check-run status in a single call —
+            eliminating the need for sequential `gh` Bash chains.
+
+            /code-review:code-review ${{ github.repository }}/pull/${{ github.event.pull_request.number }}
+          claude_args: >-
+            --model ${{ steps.model.outputs.id }}
+            --allowed-tools
+            Bash(git diff:*),
+            Bash(git log:*),
+            Bash(git status:*),
+            Bash(gh pr:*),
+            Bash(gh api:*),
+            Bash(python3 scripts/collect-pr-review-context.py:*),
+            Read,
+            Glob,
+            Grep
+
+      - name: Upload Claude session transcript
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: claude-transcript
+          path: ~/.claude/projects/**/*.jsonl
+          if-no-files-found: ignore
+          retention-days: 30
+

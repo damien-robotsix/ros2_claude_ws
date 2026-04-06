@@ -1,0 +1,27 @@
+# auto_tune workspace configuration — ros2_claude_ws
+#
+# Model aliases: use "haiku", "sonnet", or "opus" to automatically resolve
+# to the latest pinned version of that model family.
+# You may also specify a full model ID (e.g. "claude-sonnet-4-6") to pin
+# to a specific version.
+
+models:
+  claude_code: "opus"
+  code_review: "sonnet"
+  auto_improve: "opus"
+  auto_improve_verify: "opus"
+  claude_agent: "opus"
+
+model_aliases:
+  haiku: "claude-haiku-4-5-20251001"
+  sonnet: "claude-sonnet-4-6"
+  opus: "claude-opus-4-6"
+
+auto_improve:
+  default_conversation_limit: 20
+
+hub:
+  enabled: true
+  repo: "damien-robotsix/claude-auto-tune-hub"
+  local_transcripts:
+    enabled: true

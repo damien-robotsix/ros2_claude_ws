@@ -1,0 +1,93 @@
+name: Docs Sync
+
+on:
+  schedule:
+    # Runs every day at 06:00 UTC, after the usual push window.
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+    inputs:
+      since:
+        description: "Git --since window (e.g. '24 hours ago', '3 days ago')"
+        required: false
+        default: '24 hours ago'
+
+jobs:
+  docs-sync:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      id-token: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          # Need enough history to look back through the window.
+          fetch-depth: 0
+
+      - name: Collect doc-relevant diff
+        id: collect
+        run: |
+          bash scripts/collect-doc-relevant-diff.sh "${{ github.event.inputs.since || '24 hours ago' }}"
+          if [ -s .scratch/doc-diff.txt ]; then
+            echo "has_changes=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_changes=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Resolve model from auto_tune_config.yml
+        if: steps.collect.outputs.has_changes == 'true'
+        id: model
+        run: |
+          alias=$(yq '.models.docs_sync // .models.auto_improve // "sonnet"' auto_tune_config.yml)
+          id=$(yq ".model_aliases.\"$alias\" // \"$alias\"" auto_tune_config.yml)
+          echo "id=$id" >> "$GITHUB_OUTPUT"
+
+      - name: Run Docs Sync Agent
+        if: steps.collect.outputs.has_changes == 'true'
+        uses: ./.github/actions/claude-code-retry
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+
+          prompt: |
+            Read `scripts/docs-sync-prompt.md` — it contains your full
+            instructions. You are the daily docs-sync agent. Your job is
+            narrow: keep pages under `docs/` aligned with whatever landed
+            on `main` in the last window. You do not propose code changes
+            or touch anything outside `docs/`.
+
+            The change set has already been collected for you:
+              .scratch/doc-commits.txt — commits in the window
+              .scratch/doc-diff.txt    — unified diff (docs/ and .github/ excluded)
+
+            Routing map: docs/.docsrules
+
+            Today's date: $(date +%Y-%m-%d)
+
+            If nothing meaningful changed, exit without opening a PR.
+
+          claude_args: >-
+            --model ${{ steps.model.outputs.id }}
+            --allowed-tools
+            Bash(git *),
+            Bash(gh pr:*),
+            Bash(cat *),
+            Bash(ls *),
+            Bash(wc *),
+            Bash(head *),
+            Bash(find *),
+            Read,
+            Write,
+            Edit,
+            Glob,
+            Grep
+
+      - name: Upload Claude session transcript
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: claude-transcript
+          path: ~/.claude/projects/**/*.jsonl
+          if-no-files-found: ignore
+          retention-days: 30

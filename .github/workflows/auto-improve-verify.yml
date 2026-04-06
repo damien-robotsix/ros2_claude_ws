@@ -1,0 +1,173 @@
+name: Auto-Improvement Verify
+
+# Per-issue verify half of the split auto-improve system. For one specific
+# auto-improve issue, this workflow re-runs the extractor scoped to that
+# fingerprint, produces a fresh "after" snapshot, compares it to the
+# "Baseline (before fix)" section written by the discover workflow, and
+# decides the lifecycle transition (capture baseline / stay raised / move
+# to merged / close as solved / reopen regression). It is the ONLY
+# workflow allowed to advance issues past `pr-open` and the ONLY workflow
+# allowed to close an auto-improve issue.
+#
+# Iteration over open issues is deterministic: the `list-issues` job
+# enumerates targets up front and the `verify` job fans out via a matrix
+# so each Claude invocation handles exactly one issue.
+
+on:
+  schedule:
+    # Runs daily at 06:00 UTC — fans out over every open auto-improve issue.
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: 'Verify a single auto-improve issue by number. Leave empty to iterate every open issue.'
+        required: false
+        default: ''
+
+jobs:
+  list-issues:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: read
+    outputs:
+      issues: ${{ steps.collect.outputs.issues }}
+      count: ${{ steps.collect.outputs.count }}
+    steps:
+      - name: Collect target issue numbers
+        id: collect
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_ISSUE: ${{ github.event.inputs.issue_number }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if [ -n "${INPUT_ISSUE}" ]; then
+            issues=$(jq -nc --arg n "${INPUT_ISSUE}" '[($n | tonumber)]')
+          else
+            issues=$(gh issue list \
+              --repo "${REPO}" \
+              --label auto-improve \
+              --state open \
+              --limit 200 \
+              --json number \
+              --jq '[.[].number]')
+          fi
+          count=$(echo "${issues}" | jq 'length')
+          echo "issues=${issues}" >> "$GITHUB_OUTPUT"
+          echo "count=${count}" >> "$GITHUB_OUTPUT"
+          echo "Selected ${count} issue(s): ${issues}"
+
+  verify:
+    needs: list-issues
+    if: needs.list-issues.outputs.count != '0'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        issue_number: ${{ fromJSON(needs.list-issues.outputs.issues) }}
+    permissions:
+      contents: read
+      pull-requests: read
+      issues: write
+      id-token: write
+      actions: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Inject CI sandbox rules into CLAUDE.md
+        # CI-only prompt injection. Keeps docs/ci-sandbox-rules.md as the
+        # single source of truth while leaving CLAUDE.md clean for local
+        # (Docker / IDE) runs that don't hit the allowlist or sandbox.
+        run: |
+          printf '\n\n' >> CLAUDE.md
+          cat docs/ci-sandbox-rules.md >> CLAUDE.md
+
+      - name: Resolve model from auto_tune_config.yml
+        id: model
+        run: |
+          alias=$(yq '.models.auto_improve_verify // .models.auto_improve // "opus"' auto_tune_config.yml)
+          id=$(yq ".model_aliases.\"$alias\" // \"$alias\"" auto_tune_config.yml)
+          echo "id=$id" >> "$GITHUB_OUTPUT"
+
+      - name: Fetch local Claude Code transcripts from hub (best effort)
+        # Same pull as auto-improve-discover.yml: populates
+        # .scratch/hub-transcripts/ from the shared hub repo so the
+        # workflow-insights-extractor can include local-run signals in the
+        # per-issue "after" snapshot. Hard no-op when hub config is off or
+        # HUB_TOKEN is missing; scoped to this step so the token
+        # never leaks into the Claude step.
+        env:
+          HUB_TOKEN: ${{ secrets.HUB_TOKEN }}
+        run: python3 scripts/hub/fetch-local-transcripts.py
+
+      - name: Run Auto-Improvement Verify
+        uses: ./.github/actions/claude-code-retry
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          allowed_bots: 'claude'
+
+          additional_permissions: |
+            actions: read
+
+          prompt: |
+            Read the file `scripts/auto-improve-verify-prompt.md` — it
+            contains your full instructions. You are the **verify** half
+            of the split auto-improve tracker. Load the target issue's
+            `## Baseline (before fix)` section, invoke the
+            `workflow-insights-extractor` subagent scoped to that issue's
+            fingerprint key to build an "after" snapshot, append a
+            `## Verification history` entry, and make the lifecycle
+            decision: capture baseline, stay raised, move to merged, close
+            as solved, or reopen on regression. You are the only workflow
+            allowed to close an auto-improve issue.
+
+            ISSUE_NUMBER=${{ matrix.issue_number }}
+            Today's date: $(date +%Y-%m-%d)
+
+            Verify only this single issue and exit. The workflow
+            enumerates open issues deterministically up front and fans
+            out one invocation per issue via a matrix, so you must not
+            list or iterate over other issues yourself.
+
+          claude_args: >-
+            --model ${{ steps.model.outputs.id }}
+            --allowed-tools
+            Task,
+            Bash(gh api:*),
+            Bash(gh run:*),
+            Bash(gh workflow:*),
+            Bash(gh pr:*),
+            Bash(gh issue:*),
+            Bash(gh label:*),
+            Bash(jq:*),
+            Bash(python3 *),
+            Bash(mkdir *),
+            Bash(cat *),
+            Bash(echo *),
+            Bash(unzip *),
+            Bash(wc *),
+            Bash(ls *),
+            Bash(head *),
+            Bash(find *),
+            Bash(rm *),
+            Read,
+            Write,
+            Edit,
+            Glob,
+            Grep,
+            WebFetch,
+            WebSearch
+
+      - name: Upload Claude session transcript
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: claude-transcript-issue-${{ matrix.issue_number }}
+          path: ~/.claude/projects/**/*.jsonl
+          if-no-files-found: ignore
+          retention-days: 30

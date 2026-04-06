@@ -1,0 +1,137 @@
+name: Claude Agent
+
+on:
+  issue_comment:
+    types: [created, edited]
+  pull_request_review_comment:
+    types: [created, edited]
+  pull_request_review:
+    types: [submitted]
+  issues:
+    types: [opened, labeled]
+  pull_request:
+    types: [opened, synchronize, ready_for_review]
+
+jobs:
+  claude-agent:
+    # Never trigger on the repo owner's own actions
+    if: github.actor != 'damien-robotsix'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      id-token: write
+      actions: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Inject CI sandbox rules into CLAUDE.md
+        run: |
+          printf '\n\n' >> CLAUDE.md
+          cat docs/ci-sandbox-rules.md >> CLAUDE.md
+
+      - name: Resolve model from auto_tune_config.yml
+        id: model
+        run: |
+          alias=$(yq '.models.claude_agent // "opus"' auto_tune_config.yml)
+          id=$(yq ".model_aliases.\"$alias\" // \"$alias\"" auto_tune_config.yml)
+          echo "id=$id" >> "$GITHUB_OUTPUT"
+
+      - name: Run Claude Agent
+        id: claude
+        uses: ./.github/actions/claude-code-retry
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          allowed_bots: "claude[bot]"
+          additional_permissions: |
+            actions: read
+          prompt: |
+            You are an autonomous agent managing this repository on behalf of the
+            maintainer (damien-robotsix). You have been triggered by a GitHub
+            event. Analyse the full context of the event (issue body, PR diff,
+            comments, CI status) and determine the best course of action.
+
+            ## Confidence gate
+
+            Before taking ANY action, evaluate your confidence on a three-point
+            scale:
+
+            - **High** — the request is clear, scoped, and you are certain the
+              action is correct (e.g., a well-described issue asking for a
+              specific change, a PR whose checks all pass and has approvals).
+            - **Medium** — you understand the intent but the action carries some
+              risk or ambiguity (e.g., a merge with minor unresolved comments).
+            - **Low** — the request is vague, the action could have unintended
+              side-effects, or you lack context to proceed safely.
+
+            Rules:
+            1. **High confidence** → execute the action (create PR, merge,
+               comment, etc.) and explain what you did.
+            2. **Medium confidence** → leave a comment describing what you
+               *would* do and why, then ask the maintainer for confirmation.
+               Do NOT take the action.
+            3. **Low confidence** → leave a brief comment acknowledging the
+               event and state that manual intervention is needed. Do NOT take
+               the action.
+
+            Always start your response with your confidence assessment:
+            `**Confidence: High/Medium/Low**` followed by a one-line rationale.
+
+            ## Allowed actions
+
+            When confident, you may:
+            - Create a branch and open a pull request to address an issue.
+            - Comment on issues or pull requests with feedback or analysis.
+            - Merge a pull request (prefer squash merge) when CI is green and
+              the PR is approved or trivially correct.
+            - Close stale or duplicate issues with an explanation.
+
+            ## Safety rules
+
+            - Never force-push or rewrite published history.
+            - Never commit secrets, API keys, or credentials.
+            - Never merge a PR that has failing required checks.
+            - Never take destructive actions (delete branches, close PRs)
+              without high confidence.
+            - When creating PRs, use `Refs #<issue-number>` (never `Fixes #`
+              or `Closes #`) so issues are not auto-closed.
+
+          claude_args: >-
+            --model ${{ steps.model.outputs.id }}
+            --allowed-tools
+            Bash(git checkout:*),
+            Bash(git switch:*),
+            Bash(git branch:*),
+            Bash(git add:*),
+            Bash(git commit:*),
+            Bash(git push:*),
+            Bash(git fetch:*),
+            Bash(git pull:*),
+            Bash(git status:*),
+            Bash(git diff:*),
+            Bash(git log:*),
+            Bash(git restore:*),
+            Bash(git rm:*),
+            Bash(git mv:*),
+            Bash(gh pr:*),
+            Bash(gh issue:*),
+            Bash(gh api:*),
+            Bash(gh run:*),
+            Read,
+            Write,
+            Edit,
+            Glob,
+            Grep
+
+      - name: Upload Claude session transcript
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: claude-agent-transcript
+          path: ~/.claude/projects/**/*.jsonl
+          if-no-files-found: ignore
+          retention-days: 30

@@ -1,0 +1,21 @@
+name: Clean Stale Branches
+
+on:
+  schedule:
+    - cron: '0 4 * * *' # Daily at 04:00 UTC
+  workflow_dispatch: {}
+
+jobs:
+  clean-branches:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Clean stale branches
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/clean-stale-branches.py --repo ${{ github.repository }}

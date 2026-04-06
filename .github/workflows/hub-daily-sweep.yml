@@ -1,0 +1,132 @@
+name: Hub Daily Sweep
+
+# Phase 1 of the cross-workspace improvement sharing protocol (issue #32).
+# Runs daily. Uses Claude to decide which PRs merged in the last 24 hours
+# are generalizable and opens a proposal issue in the configured hub repo
+# for each. Deterministic `gh` wrappers under scripts/hub/*.py do the
+# actual data movement; Claude only provides judgment.
+#
+# This workflow is publish-only. It never adopts proposals from other
+# forks — that lives in the sibling hub-sync workflow (later phase).
+
+on:
+  schedule:
+    # Runs daily at 03:00 UTC
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+    inputs:
+      lookback:
+        description: 'Lookback window for merged PRs (e.g. 24h, 3d)'
+        required: false
+        default: '24h'
+
+jobs:
+  hub-daily-sweep:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: read
+      pull-requests: read
+      id-token: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Inject CI sandbox rules into CLAUDE.md
+        # CI-only prompt injection, mirrors auto-improve-discover.yml.
+        run: |
+          printf '\n\n' >> CLAUDE.md
+          cat docs/ci-sandbox-rules.md >> CLAUDE.md
+
+      - name: Resolve hub config from auto_tune_config.yml
+        id: hub
+        run: |
+          enabled=$(yq '.hub.enabled // false' auto_tune_config.yml)
+          repo=$(yq '.hub.repo // ""' auto_tune_config.yml)
+          echo "enabled=$enabled" >> "$GITHUB_OUTPUT"
+          echo "repo=$repo" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve model from auto_tune_config.yml
+        id: model
+        if: steps.hub.outputs.enabled == 'true' && steps.hub.outputs.repo != ''
+        run: |
+          alias=$(yq '.models.auto_improve // "opus"' auto_tune_config.yml)
+          id=$(yq ".model_aliases.\"$alias\" // \"$alias\"" auto_tune_config.yml)
+          echo "id=$id" >> "$GITHUB_OUTPUT"
+
+      - name: Prepare scratch dir
+        if: steps.hub.outputs.enabled == 'true' && steps.hub.outputs.repo != ''
+        run: mkdir -p .scratch
+
+      - name: Check HUB_TOKEN availability
+        if: steps.hub.outputs.enabled == 'true' && steps.hub.outputs.repo != ''
+        env:
+          HUB_TOKEN: ${{ secrets.HUB_TOKEN }}
+        run: |
+          if [ -z "$HUB_TOKEN" ]; then
+            echo "::warning::HUB_TOKEN secret is not provisioned. The daily sweep will not be able to create proposals in the hub repo. Add a fine-grained PAT with contents:read + issues:write on the hub repo as the HUB_TOKEN repository secret."
+          fi
+
+      - name: Export hub env for composite action
+        if: steps.hub.outputs.enabled == 'true' && steps.hub.outputs.repo != ''
+        run: |
+          echo "HUB_REPO=${{ steps.hub.outputs.repo }}" >> "$GITHUB_ENV"
+          echo "HUB_TOKEN=${{ secrets.HUB_TOKEN }}" >> "$GITHUB_ENV"
+          echo "ORIGIN_REPO=${{ github.repository }}" >> "$GITHUB_ENV"
+          echo "LOOKBACK=${{ github.event.inputs.lookback || '24h' }}" >> "$GITHUB_ENV"
+
+      - name: Run Hub Daily Sweep
+        if: steps.hub.outputs.enabled == 'true' && steps.hub.outputs.repo != ''
+        uses: ./.github/actions/claude-code-retry
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+
+          prompt: |
+            Read the file `scripts/hub-daily-sweep-prompt.md` — it
+            contains your full instructions. You are the daily sweep
+            half of the cross-workspace improvement sharing protocol.
+            Your only write operation is creating proposal issues in
+            the hub repo via `scripts/hub/hub-open-proposal.py`.
+
+            HUB_REPO=${{ steps.hub.outputs.repo }}
+            ORIGIN_REPO=${{ github.repository }}
+            LOOKBACK=${{ github.event.inputs.lookback || '24h' }}
+            Today's date: $(date +%Y-%m-%d)
+
+          claude_args: >-
+            --model ${{ steps.model.outputs.id }}
+            --allowed-tools
+            Bash(gh api:*),
+            Bash(gh pr:*),
+            Bash(gh issue:*),
+            Bash(gh label:*),
+            Bash(gh repo:*),
+            Bash(jq:*),
+            Bash(python3 *),
+            Bash(mkdir *),
+            Bash(cat *),
+            Bash(echo *),
+            Bash(ls *),
+            Bash(head *),
+            Bash(rm *),
+            Read,
+            Write,
+            Glob,
+            Grep
+
+      - name: Sweep disabled notice
+        if: steps.hub.outputs.enabled != 'true' || steps.hub.outputs.repo == ''
+        run: |
+          echo "hub.enabled is false or hub.repo is empty in auto_tune_config.yml; skipping."
+
+      - name: Upload Claude session transcript
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: claude-transcript
+          path: ~/.claude/projects/**/*.jsonl
+          if-no-files-found: ignore
+          retention-days: 30

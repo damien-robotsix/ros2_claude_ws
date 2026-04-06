@@ -1,0 +1,81 @@
+name: 'Claude Code with Retry'
+description: >
+  Thin wrapper around anthropics/claude-code-action that retries once on
+  transient failures (e.g., 429 rate-limit during OIDC token exchange).
+
+inputs:
+  claude_code_oauth_token:
+    description: 'OAuth token for Claude Code'
+    required: true
+  prompt:
+    description: 'Prompt to pass to Claude Code'
+    required: false
+    default: ''
+  claude_args:
+    description: 'Extra CLI arguments for Claude Code'
+    required: false
+    default: ''
+  additional_permissions:
+    description: 'Additional GitHub permissions'
+    required: false
+    default: ''
+  allowed_bots:
+    description: 'Bot accounts allowed to trigger'
+    required: false
+    default: ''
+  plugin_marketplaces:
+    description: 'Plugin marketplace URLs'
+    required: false
+    default: ''
+  plugins:
+    description: 'Plugins to enable'
+    required: false
+    default: ''
+  retry_delay:
+    description: 'Seconds to wait before retrying (default: 3600)'
+    required: false
+    default: '3600'
+
+runs:
+  using: composite
+  steps:
+    - id: attempt1
+      continue-on-error: true
+      uses: anthropics/claude-code-action@1eddb334cfa79fdb21ecbe2180ca1a016e8e7d47  # v1
+      env:
+        CLAUDE_CODE_PLUGIN_KEEP_MARKETPLACE_ON_FAILURE: 'true'
+      with:
+        claude_code_oauth_token: ${{ inputs.claude_code_oauth_token }}
+        prompt: ${{ inputs.prompt }}
+        claude_args: ${{ inputs.claude_args }}
+        additional_permissions: ${{ inputs.additional_permissions }}
+        allowed_bots: ${{ inputs.allowed_bots }}
+        plugin_marketplaces: ${{ inputs.plugin_marketplaces }}
+        plugins: ${{ inputs.plugins }}
+
+    - if: steps.attempt1.outcome == 'failure'
+      shell: bash
+      run: |
+        echo "::warning::Claude Code action failed on first attempt — retrying in ${{ inputs.retry_delay }}s (rate-limit cooldown)"
+        sleep ${{ inputs.retry_delay }}
+
+    - id: attempt2
+      if: steps.attempt1.outcome == 'failure'
+      continue-on-error: true
+      uses: anthropics/claude-code-action@1eddb334cfa79fdb21ecbe2180ca1a016e8e7d47  # v1
+      env:
+        CLAUDE_CODE_PLUGIN_KEEP_MARKETPLACE_ON_FAILURE: 'true'
+      with:
+        claude_code_oauth_token: ${{ inputs.claude_code_oauth_token }}
+        prompt: ${{ inputs.prompt }}
+        claude_args: ${{ inputs.claude_args }}
+        additional_permissions: ${{ inputs.additional_permissions }}
+        allowed_bots: ${{ inputs.allowed_bots }}
+        plugin_marketplaces: ${{ inputs.plugin_marketplaces }}
+        plugins: ${{ inputs.plugins }}
+
+    - if: steps.attempt1.outcome == 'failure' && steps.attempt2.outcome == 'failure'
+      shell: bash
+      run: |
+        echo "::error::Claude Code action failed after retry"
+        exit 1

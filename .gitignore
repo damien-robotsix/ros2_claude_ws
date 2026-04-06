@@ -1,0 +1,16 @@
+# Claude local state (persisted via Docker volumes)
+.claude-home/
+.claude/settings.local.json
+
+# Environment and secrets
+.env
+.env.*
+*.key
+*.pem
+*.secret
+
+# Python bytecode
+__pycache__/
+
+# Agent scratch space (per CLAUDE.md CI sandbox rules)
+.scratch/

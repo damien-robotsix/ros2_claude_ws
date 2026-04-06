@@ -1,0 +1,143 @@
+name: Auto-Improvement Discover
+
+# Discover half of the split auto-improve system. Parses recent workflow
+# logs + Claude Code transcripts, raises/updates tracked issues (with a
+# BEFORE-fix baseline snapshot captured at creation), and ships fix PRs
+# using "Refs #<num>" so GitHub does not auto-close the issue. Lifecycle
+# beyond raised → pr-open is owned by the sibling auto-improve-verify
+# workflow, which performs the per-issue before/after comparison.
+
+on:
+  schedule:
+    # Runs every Sunday at 03:00 UTC
+    - cron: '0 3 * * 0'
+  workflow_dispatch:
+    inputs:
+      conversation_limit:
+        description: 'Max Claude Code session transcripts to analyze (workflow logs are unlimited)'
+        required: false
+        default: '20'
+
+jobs:
+  auto-improve-discover:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      id-token: write
+      actions: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Inject CI sandbox rules into CLAUDE.md
+        # CI-only prompt injection. Keeps docs/ci-sandbox-rules.md as the
+        # single source of truth while leaving CLAUDE.md clean for local
+        # (Docker / IDE) runs that don't hit the allowlist or sandbox.
+        # Fixes the recurring pattern tracked in issues #27, #28, #29.
+        run: |
+          printf '\n\n' >> CLAUDE.md
+          cat docs/ci-sandbox-rules.md >> CLAUDE.md
+
+      - name: Resolve model from auto_tune_config.yml
+        id: model
+        run: |
+          alias=$(yq '.models.auto_improve // "opus"' auto_tune_config.yml)
+          id=$(yq ".model_aliases.\"$alias\" // \"$alias\"" auto_tune_config.yml)
+          echo "id=$id" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve conversation limit
+        id: limit
+        run: |
+          override='${{ github.event.inputs.conversation_limit }}'
+          if [ -n "$override" ]; then
+            value="$override"
+          else
+            value=$(yq '.auto_improve.default_conversation_limit // 20' auto_tune_config.yml)
+          fi
+          echo "value=$value" >> "$GITHUB_OUTPUT"
+
+      - name: Fetch local Claude Code transcripts from hub (best effort)
+        # Pull half of the local-transcript lane. Populates
+        # .scratch/hub-transcripts/ with session JSONL files published by
+        # `run.sh` from local Docker runs, so the workflow-insights-extractor
+        # subagent can fold them into the same clustering pass that already
+        # consumes CI transcripts. The script is a hard no-op when any of
+        # the following is true, so the step is always safe:
+        #   - hub.enabled / hub.local_transcripts.enabled is false
+        #   - HUB_TOKEN secret is not provisioned on this fork
+        #   - the hub repo cannot be reached
+        # HUB_TOKEN is scoped to this step only; it is not exposed to
+        # the Claude step that runs after this one.
+        env:
+          HUB_TOKEN: ${{ secrets.HUB_TOKEN }}
+        run: python3 scripts/hub/fetch-local-transcripts.py
+
+      - name: Run Auto-Improvement Discover
+        uses: ./.github/actions/claude-code-retry
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          allowed_bots: 'claude'
+
+          additional_permissions: |
+            actions: read
+
+          prompt: |
+            Read the file `scripts/auto-improve-discover-prompt.md` — it
+            contains your full instructions. You are the **discover** half
+            of the split auto-improve tracker: parse recent runs + Claude
+            Code transcripts, raise or update tracked issues (capturing a
+            BEFORE-fix baseline on creation), and ship focused fix PRs
+            using `Refs #<num>` (never `Fixes #`, `Closes #`, or
+            `Resolves #`). You must NOT advance issues past pr-open —
+            transitions to merged/solved are owned exclusively by the
+            sibling auto-improve-verify workflow. For every newly created
+            issue, dispatch the verify workflow with that issue number so
+            its baseline is confirmed immediately.
+
+            CONVERSATION_LIMIT=${{ steps.limit.outputs.value }}
+            Workflow logs to parse: all discoverable runs (no cap)
+            Today's date: $(date +%Y-%m-%d)
+
+          claude_args: >-
+            --model ${{ steps.model.outputs.id }}
+            --allowed-tools
+            Task,
+            Bash(gh api:*),
+            Bash(gh run:*),
+            Bash(gh workflow:*),
+            Bash(gh pr:*),
+            Bash(gh issue:*),
+            Bash(gh label:*),
+            Bash(jq:*),
+            Bash(git *),
+            Bash(python3 *),
+            Bash(mkdir *),
+            Bash(cat *),
+            Bash(echo *),
+            Bash(unzip *),
+            Bash(wc *),
+            Bash(ls *),
+            Bash(head *),
+            Bash(find *),
+            Bash(rm *),
+            Read,
+            Write,
+            Edit,
+            Glob,
+            Grep,
+            WebFetch,
+            WebSearch
+
+      - name: Upload Claude session transcript
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: claude-transcript
+          path: ~/.claude/projects/**/*.jsonl
+          if-no-files-found: ignore
+          retention-days: 30

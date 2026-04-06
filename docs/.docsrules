@@ -1,0 +1,39 @@
+# docs/.docsrules
+#
+# Mapping from source paths (globs) to the documentation page that most
+# likely needs updating when files matching the glob change.
+#
+# Format: one rule per non-comment line.
+#   <source-pathspec>  ->  <target-doc-file>
+#
+# The docs-sync agent reads this file first and uses it to route
+# change-set entries to specific doc pages. A single source file may
+# match multiple rules; all matching targets are candidates.
+#
+# Pathspecs are plain shell globs, rooted at the repo root. Use `**` for
+# recursive matches. Use the literal string `(skip)` on the right-hand
+# side to mark changes that should not drive a docs update.
+
+# Workflows — user-visible behavior of the agent pipeline
+.github/workflows/*.yml                 -> docs/workflows.md
+
+# Config — every user-visible knob
+auto_tune_config.yml                    -> docs/configuration.md
+scripts/parse-workflow-log.py           -> docs/configuration.md
+scripts/parse-claude-transcript.py      -> docs/configuration.md
+
+# Architecture — pipeline prompts, agent shape, CLAUDE.md conventions
+scripts/auto-improve-discover-prompt.md -> docs/architecture.md
+scripts/auto-improve-verify-prompt.md   -> docs/architecture.md
+scripts/docs-sync-prompt.md             -> docs/architecture.md
+CLAUDE.md                               -> docs/architecture.md
+
+# Quickstart — top-level onboarding surface
+README.md                               -> docs/quickstart.md
+
+# CI sandbox rules mirror a single source file; drift is unlikely to
+# come from unrelated code changes.
+docs/ci-sandbox-rules.md                -> (skip)
+
+# The agent's own outputs never drive further updates.
+docs/**                                 -> (skip)
