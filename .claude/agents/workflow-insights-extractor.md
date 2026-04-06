@@ -12,6 +12,20 @@ aggregate, and return structured data.
 
 ---
 
+## Parameters
+
+The calling workflow passes these values in the prompt:
+
+| Parameter            | Required | Default | Description |
+|----------------------|----------|---------|-------------|
+| `CONVERSATION_LIMIT` | no      | 20      | Maximum number of session transcripts to parse |
+| `FINGERPRINT_KEY`    | no      | —       | When set, only return candidates whose `key` matches this value (verify mode) |
+| `TITLE`              | no      | —       | Issue title hint for scoped extraction |
+| `CATEGORY`           | no      | —       | Issue category hint for scoped extraction |
+| `WINDOW_START`       | no      | —       | ISO-8601 timestamp hard filter — drop all runs with `createdAt < WINDOW_START` |
+
+---
+
 ## Procedure
 
 ### 1. Discover workflow runs
@@ -20,8 +34,15 @@ aggregate, and return structured data.
 gh run list --limit 50 --json databaseId,workflowName,status,conclusion,createdAt,headBranch,event
 ```
 
-Filter to **completed** runs only (skip `in_progress` / `queued`). Record
-the total count as `WORKFLOWS_DISCOVERED`.
+Filter to **completed** runs only (skip `in_progress` / `queued`).
+
+If `WINDOW_START` is set, **drop every run whose `createdAt` is earlier than
+`WINDOW_START`** before proceeding. This is a hard filter — no exceptions.
+Because each session transcript is produced by exactly one workflow run,
+filtering runs by `createdAt >= WINDOW_START` also filters the transcripts
+automatically.
+
+Record the total count of remaining runs as `WORKFLOWS_DISCOVERED`.
 
 ### 2. Parse each run's log
 
@@ -89,8 +110,13 @@ these for its run summary):
 >>> Conversations analyzed: <CONVERSATIONS_ANALYZED>
 ```
 
+If `FINGERPRINT_KEY` is set, filter the candidate array to only include
+candidates whose `key` matches `FINGERPRINT_KEY`. Return an empty array if
+there is no match.
+
 Then print the JSON array of problem candidates. If no candidates meet the
-threshold, return an empty array `[]`.
+threshold (or all were filtered out by `FINGERPRINT_KEY`), return an empty
+array `[]`.
 
 ---
 
@@ -117,3 +143,13 @@ Discard signals that are:
 - The `key` slug must be stable: the same problem discovered in a future
   run should produce the same key. Derive it from the normalized problem
   description and category, not from run IDs or dates.
+
+## Contract
+
+- You **never** create or modify GitHub issues — that is the caller's job.
+- You **never** push commits or open PRs.
+- When `WINDOW_START` is set, you **must** drop all runs created before that
+  timestamp. This is how the verify workflow excludes pre-fix data.
+- When `FINGERPRINT_KEY` is set, you **must** filter the final output to only
+  matching candidates. Return an empty array if there is no match.
+- Keep evidence excerpts ≤ 160 characters.
