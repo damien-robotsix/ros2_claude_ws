@@ -34,8 +34,10 @@ RUN npm install -g @anthropic-ai/claude-code
 RUN rosdep init || true
 
 # ── User setup (reuse the existing 'ubuntu' user from the base image) ─
+# .claude-home is bind-mounted over /home/ubuntu at runtime, so only
+# create dirs needed for the build here; runtime state lives on the host.
 RUN mkdir -p /home/ubuntu/.claude /home/ubuntu/.config/gh \
-    && chown -R ubuntu:ubuntu /home/ubuntu/.claude /home/ubuntu/.config/gh
+    && chown -R ubuntu:ubuntu /home/ubuntu
 
 USER ubuntu
 RUN rosdep update
@@ -45,9 +47,12 @@ WORKDIR /workspace
 # Persist the chosen distro so scripts can discover it at runtime
 ENV ROS_DISTRO=${ROS_DISTRO}
 
-# Source ROS2 setup in every shell
-RUN echo "source /opt/ros/${ROS_DISTRO}/setup.bash" >> /home/ubuntu/.bashrc \
-    && echo '[ -f /workspace/install/setup.bash ] && source /workspace/install/setup.bash' >> /home/ubuntu/.bashrc
+# Write .bashrc to a build-time location; the entrypoint copies it if the
+# bind-mounted home doesn't already have one.
+RUN echo "source /opt/ros/${ROS_DISTRO}/setup.bash" >> /tmp/.bashrc.default \
+    && echo '[ -f /workspace/install/setup.bash ] && source /workspace/install/setup.bash' >> /tmp/.bashrc.default
 
-ENTRYPOINT ["claude"]
+COPY --chown=ubuntu:ubuntu entrypoint.sh /usr/local/bin/entrypoint.sh
+
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 CMD ["--dangerously-skip-permissions"]

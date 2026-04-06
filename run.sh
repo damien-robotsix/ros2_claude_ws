@@ -23,17 +23,18 @@ docker compose build
 
 # Ensure host dirs/files exist for bind mounts
 mkdir -p "$SCRIPT_DIR/.claude-home/.claude" "$SCRIPT_DIR/.claude-home/.config/gh"
-[ -f "$SCRIPT_DIR/.claude-home/.claude.json" ] || touch "$SCRIPT_DIR/.claude-home/.claude.json"
 
 # Run with explicit interactive TTY allocation. `|| true` so a
 # non-zero exit from the container (Ctrl-C, Claude Code error) still
 # falls through to the post-run transcript sync below.
+#
+# The whole .claude-home directory is mounted as /home/ubuntu (the
+# container user's home) so that atomic writes (write tmp + rename)
+# survive between runs — individual file mounts break on rename.
 docker run -it --rm \
     --network host \
     -v "$SCRIPT_DIR:/workspace" \
-    -v "$SCRIPT_DIR/.claude-home/.claude:/home/claude/.claude" \
-    -v "$SCRIPT_DIR/.claude-home/.claude.json:/home/claude/.claude.json" \
-    -v "$SCRIPT_DIR/.claude-home/.config/gh:/home/claude/.config/gh" \
+    -v "$SCRIPT_DIR/.claude-home:/home/ubuntu" \
     -w /workspace \
     ros2_claude_ws-claude \
     --dangerously-skip-permissions "$@" || true
