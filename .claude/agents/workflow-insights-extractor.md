@@ -46,10 +46,16 @@ Record the total count of remaining runs as `WORKFLOWS_DISCOVERED`.
 
 ### 2. Parse each run's log
 
-For each completed run, pipe its log through the workflow-log parser:
+For each completed run, save its log to a scratch file and then pass that
+file to the workflow-log parser (two separate Bash calls to comply with the
+CI sandbox single-operation rule):
 
 ```bash
-gh run view <run-id> --log | python3 scripts/parse-workflow-log.py
+gh run view <run-id> --log > .scratch/run-<run-id>.log
+```
+
+```bash
+python3 scripts/parse-workflow-log.py .scratch/run-<run-id>.log
 ```
 
 Collect the JSON output. Track how many runs were successfully parsed as
