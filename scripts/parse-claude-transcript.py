@@ -35,10 +35,40 @@ TOP_N = 20
 SEQUENCE_PREVIEW_LEN = 100
 
 
+def _classify_error(error_text: str) -> str:
+    """Classify an error as 'controllable' or 'uncontrollable'.
+
+    Controllable errors are ones that prompt or code changes can fix:
+    tool misuse, bad arguments, edit conflicts, missing reads, etc.
+
+    Uncontrollable errors are external: network timeouts, HTTP 429/5xx,
+    auth failures, rate limits, DNS resolution, and similar transient
+    infrastructure issues.
+    """
+    if not error_text:
+        return "controllable"
+    lower = error_text.lower()
+    uncontrollable_patterns = (
+        "timeout", "timed out", "connection refused", "connection reset",
+        "network", "dns", "resolve host",
+        "rate limit", "rate_limit", "429", "too many requests",
+        "401", "403", "unauthorized", "forbidden", "auth",
+        "500", "502", "503", "504", "internal server error",
+        "bad gateway", "service unavailable", "gateway timeout",
+        "ssl", "certificate", "eof", "broken pipe",
+    )
+    for pat in uncontrollable_patterns:
+        if pat in lower:
+            return "uncontrollable"
+    return "controllable"
+
+
 def extract_tool_calls(lines: list[str]) -> dict:
     """Walk JSONL lines and return a structured activity summary."""
     tool_counter: Counter = Counter()
     error_tools: list[str] = []
+    controllable_errors: list[str] = []
+    uncontrollable_errors: list[str] = []
     tool_sequences: list[str] = []
     total_input_tokens = 0
     total_output_tokens = 0
@@ -81,7 +111,19 @@ def extract_tool_calls(lines: list[str]) -> dict:
             for block in content if isinstance(content, list) else []:
                 if isinstance(block, dict) and block.get("type") == "tool_result":
                     if block.get("is_error") and tool_sequences:
-                        error_tools.append(tool_sequences[-1])
+                        tool_name = tool_sequences[-1]
+                        error_tools.append(tool_name)
+                        error_content = block.get("content", "")
+                        if isinstance(error_content, list):
+                            error_content = " ".join(
+                                b.get("text", "") for b in error_content
+                                if isinstance(b, dict)
+                            )
+                        category = _classify_error(str(error_content))
+                        if category == "controllable":
+                            controllable_errors.append(tool_name)
+                        else:
+                            uncontrollable_errors.append(tool_name)
 
     # Repeated consecutive-run detection: runs of 3+ identical calls in a
     # row are a strong signal that a loop could be replaced by a single
@@ -98,6 +140,8 @@ def extract_tool_calls(lines: list[str]) -> dict:
         i = j
 
     error_counter = Counter(error_tools)
+    controllable_counter = Counter(controllable_errors)
+    uncontrollable_counter = Counter(uncontrollable_errors)
 
     preview = tool_sequences[:SEQUENCE_PREVIEW_LEN]
     sequence_preview = " → ".join(preview)
@@ -109,6 +153,8 @@ def extract_tool_calls(lines: list[str]) -> dict:
         "top_tools": [t for t, _ in tool_counter.most_common(5)],
         "tool_counts": dict(tool_counter.most_common(TOP_N)),
         "error_tools": dict(error_counter.most_common(TOP_N)),
+        "controllable_errors": dict(controllable_counter.most_common(TOP_N)),
+        "uncontrollable_errors": dict(uncontrollable_counter.most_common(TOP_N)),
         "repeated_sequences": repeated[:TOP_N],
         "token_usage": {
             "input_tokens": total_input_tokens,
@@ -145,6 +191,8 @@ def main() -> None:
             "top_tools": [],
             "tool_counts": {},
             "error_tools": {},
+            "controllable_errors": {},
+            "uncontrollable_errors": {},
             "repeated_sequences": [],
             "token_usage": {"input_tokens": 0, "output_tokens": 0},
             "tool_sequence_preview": "",
