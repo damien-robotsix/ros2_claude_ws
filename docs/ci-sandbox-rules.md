@@ -2,7 +2,7 @@
 
 When running inside `anthropics/claude-code-action@v1` (the claude.yml,
 claude-code-review.yml, claude-agent.yml, auto-improve-discover.yml,
-auto-improve-verify.yml, hub-daily-sweep.yml, and hub-sync.yml workflows), Bash tool calls are
+auto-improve-verify.yml, hub-daily-sweep.yml, hub-sync.yml, and hub-adopt.yml workflows), Bash tool calls are
 restricted to the `--allowed-tools` list in the workflow and are further
 filtered by a sandbox. To avoid wasting tool calls on rejected commands,
 follow these rules:

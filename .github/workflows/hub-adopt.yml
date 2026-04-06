@@ -1,0 +1,122 @@
+name: Hub Adopt
+
+# Phase 3 of the cross-workspace improvement sharing protocol (issue #32).
+# Runs daily after hub-sync. Uses Claude to read hub proposals that this
+# workspace has adopted (via hub-sync Phase 2) and creates pull requests
+# implementing the proposed changes.
+
+on:
+  schedule:
+    # Runs daily at 05:00 UTC (1 hour after hub-sync)
+    - cron: '0 5 * * *'
+  workflow_dispatch: {}
+
+jobs:
+  hub-adopt:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: read
+      pull-requests: write
+      id-token: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Inject CI sandbox rules into CLAUDE.md
+        run: |
+          printf '\n\n' >> CLAUDE.md
+          cat docs/ci-sandbox-rules.md >> CLAUDE.md
+
+      - name: Resolve hub config from auto_tune_config.yml
+        id: hub
+        run: |
+          enabled=$(yq '.hub.enabled // false' auto_tune_config.yml)
+          repo=$(yq '.hub.repo // ""' auto_tune_config.yml)
+          echo "enabled=$enabled" >> "$GITHUB_OUTPUT"
+          echo "repo=$repo" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve model from auto_tune_config.yml
+        id: model
+        if: steps.hub.outputs.enabled == 'true' && steps.hub.outputs.repo != ''
+        run: |
+          alias=$(yq '.models.auto_improve // "opus"' auto_tune_config.yml)
+          id=$(yq ".model_aliases.\"$alias\" // \"$alias\"" auto_tune_config.yml)
+          echo "id=$id" >> "$GITHUB_OUTPUT"
+
+      - name: Check HUB_TOKEN availability
+        if: steps.hub.outputs.enabled == 'true' && steps.hub.outputs.repo != ''
+        env:
+          HUB_TOKEN: ${{ secrets.HUB_TOKEN }}
+        run: |
+          if [ -z "$HUB_TOKEN" ]; then
+            echo "::warning::HUB_TOKEN secret is not provisioned. The adopt workflow will not be able to read or label hub proposals."
+          fi
+
+      - name: Export hub env for composite action
+        if: steps.hub.outputs.enabled == 'true' && steps.hub.outputs.repo != ''
+        run: |
+          echo "HUB_REPO=${{ steps.hub.outputs.repo }}" >> "$GITHUB_ENV"
+          echo "HUB_TOKEN=${{ secrets.HUB_TOKEN }}" >> "$GITHUB_ENV"
+          echo "THIS_REPO=${{ github.repository }}" >> "$GITHUB_ENV"
+
+      - name: Run Hub Adopt
+        if: steps.hub.outputs.enabled == 'true' && steps.hub.outputs.repo != ''
+        uses: ./.github/actions/claude-code-retry
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+
+          prompt: |
+            Read the file `scripts/hub-adopt-prompt.md` — it contains
+            your full instructions. You are the adoption half of the
+            cross-workspace improvement sharing protocol (Phase 3).
+
+            HUB_REPO=${{ steps.hub.outputs.repo }}
+            THIS_REPO=${{ github.repository }}
+            Today's date: $(date +%Y-%m-%d)
+
+          claude_args: >-
+            --model ${{ steps.model.outputs.id }}
+            --allowed-tools
+            Bash(gh api:*),
+            Bash(gh issue:*),
+            Bash(gh label:*),
+            Bash(gh pr:*),
+            Bash(gh repo:*),
+            Bash(git *),
+            Bash(jq:*),
+            Bash(python3 *),
+            Bash(mkdir *),
+            Bash(cat *),
+            Bash(echo *),
+            Bash(ls *),
+            Bash(head *),
+            Bash(rm *),
+            Read,
+            Write,
+            Edit,
+            Glob,
+            Grep
+
+      - name: Adopt disabled notice
+        if: steps.hub.outputs.enabled != 'true' || steps.hub.outputs.repo == ''
+        run: |
+          echo "hub.enabled is false or hub.repo is empty in auto_tune_config.yml; skipping."
+
+      - name: Upload Claude session transcript
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: claude-transcript
+          path: ~/.claude/projects/**/*.jsonl
+          if-no-files-found: ignore
+          retention-days: 30
+
+      - name: Push CI transcripts to hub (best effort)
+        if: always()
+        env:
+          HUB_TOKEN: ${{ secrets.HUB_TOKEN }}
+        run: python3 scripts/hub/push-ci-transcripts.py
