@@ -417,8 +417,9 @@ def write_meta(
     session_id: str,
     git_sha: str,
     redacted: bool,
+    parent_session_id: str | None = None,
 ) -> None:
-    meta = {
+    meta: dict = {
         "source": "local",
         "workspace": slug,
         "session_id": session_id,
@@ -428,25 +429,62 @@ def write_meta(
         "git_sha": git_sha,
         "redacted": redacted,
     }
+    if parent_session_id is not None:
+        meta["parent_session_id"] = parent_session_id
     meta_path.parent.mkdir(parents=True, exist_ok=True)
     meta_path.write_text(json.dumps(meta, indent=2) + "\n")
 
 
+def _is_subagent(path: Path) -> bool:
+    """Return True if *path* lives under a ``subagents/`` directory."""
+    return "subagents" in path.parts
+
+
+def _parent_session_id(path: Path) -> str | None:
+    """Extract the parent session UUID from a subagent file path.
+
+    Claude Code stores subagent transcripts at::
+
+        <session-uuid>/subagents/agent-<id>.jsonl
+
+    Returns the session UUID or ``None`` if the path doesn't match.
+    """
+    parts = path.parts
+    try:
+        idx = parts.index("subagents")
+    except ValueError:
+        return None
+    if idx > 0:
+        return parts[idx - 1]
+    return None
+
+
 def plan_copies(
     sessions: Iterable[Path], hub_repo_dir: Path, slug: str
-) -> list[tuple[Path, Path, Path, str]]:
-    """Return list of (src, dst_jsonl, dst_meta, session_id) tuples for
-    sessions that are not yet present in the hub clone."""
-    plan: list[tuple[Path, Path, Path, str]] = []
+) -> list[tuple[Path, Path, Path, str, str | None]]:
+    """Return list of (src, dst_jsonl, dst_meta, session_id,
+    parent_session_id) tuples for sessions not yet in the hub clone.
+
+    Subagent files are stored under
+    ``<date>/<parent-session-id>/subagents/<agent-id>.jsonl``
+    to preserve the parent-child relationship.
+    """
+    plan: list[tuple[Path, Path, Path, str, str | None]] = []
     base = hub_repo_dir / "transcripts" / slug
     for src in sessions:
         session_id = src.stem
         date = session_date(src)
-        dst_jsonl = base / date / f"{session_id}.jsonl"
-        dst_meta = base / date / f"{session_id}.meta.json"
+        parent_sid = _parent_session_id(src)
+        if parent_sid is not None:
+            # Subagent: nest under parent session directory
+            dst_jsonl = base / date / parent_sid / "subagents" / f"{session_id}.jsonl"
+            dst_meta = base / date / parent_sid / "subagents" / f"{session_id}.meta.json"
+        else:
+            dst_jsonl = base / date / f"{session_id}.jsonl"
+            dst_meta = base / date / f"{session_id}.meta.json"
         if dst_jsonl.exists():
             continue
-        plan.append((src, dst_jsonl, dst_meta, session_id))
+        plan.append((src, dst_jsonl, dst_meta, session_id, parent_sid))
     return plan
 
 
@@ -582,9 +620,12 @@ def main() -> int:
         return 4
 
     git_sha = current_git_sha()
-    for src, dst_jsonl, dst_meta, session_id in plan:
+    for src, dst_jsonl, dst_meta, session_id, parent_sid in plan:
         copy_with_redaction(src, dst_jsonl, redact=redact)
-        write_meta(dst_meta, slug, session_id, git_sha, redacted=redact)
+        write_meta(
+            dst_meta, slug, session_id, git_sha,
+            redacted=redact, parent_session_id=parent_sid,
+        )
 
     ok, err = commit_and_push(repo_dir, slug, added=len(plan))
     if err:
