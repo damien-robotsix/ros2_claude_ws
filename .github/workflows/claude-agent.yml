@@ -14,8 +14,8 @@ on:
 
 jobs:
   claude-agent:
-    # Never trigger on the repo owner's own actions
-    if: github.actor != 'damien-robotsix'
+    # Prevent the bot from re-triggering itself in a loop
+    if: github.actor != 'claude[bot]'
     runs-on: ubuntu-latest
     permissions:
       contents: write
