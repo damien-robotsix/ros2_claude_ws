@@ -36,7 +36,9 @@ RUN rosdep init || true
 # ── User setup (reuse the existing 'ubuntu' user from the base image) ─
 # .claude-home is bind-mounted over /home/ubuntu at runtime, so only
 # create dirs needed for the build here; runtime state lives on the host.
-RUN mkdir -p /home/ubuntu/.claude /home/ubuntu/.config/gh \
+# Passwordless sudo lets the entrypoint run rosdep install at startup.
+RUN echo "ubuntu ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/ubuntu \
+    && mkdir -p /home/ubuntu/.claude /home/ubuntu/.config/gh \
     && chown -R ubuntu:ubuntu /home/ubuntu
 
 USER ubuntu

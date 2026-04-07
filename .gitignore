@@ -16,6 +16,7 @@ __pycache__/
 .scratch/
 
 # ROS2 workspace artifacts
+repos.yaml
 src/
 build/
 install/
