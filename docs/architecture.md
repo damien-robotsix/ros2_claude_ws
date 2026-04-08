@@ -16,6 +16,7 @@ CLAUDE.md                 # Agent instructions read by Claude Code
 Dockerfile                # Container image used for local runs
 docker-compose.yml        # Build/orchestration for the local image
 run.sh                    # Entry point for local sessions
+fork-workspace.sh         # Interactive script that forks this template into a new workspace
 auto_tune_config.yml      # Workspace configuration (models, auto-improve, issue tracking)
 scripts/                  # Log/transcript parsing, auto-improve discover/verify prompts, docs-sync prompt
 docs/                     # This documentation, published to GitHub Pages
