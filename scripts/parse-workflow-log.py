@@ -90,10 +90,11 @@ PATTERNS: list[tuple[str, "re.Pattern[str]"]] = [
         "exit_codes_nonzero",
         re.compile(r"(?i)(?:exit(?:ed)?(?:\s+with)?\s+(?:code\s+)?|status\s+)(?!0\b)\d+"),
     ),
-    # Retry markers.
+    # Retry markers. "attempt 1 of N" is an informational first-attempt line,
+    # not an actual retry — only match attempt N where N >= 2.
     (
         "retries",
-        re.compile(r"(?i)\b(?:retry|retrying|attempt\s+\d+\s+of\s+\d+|backing off)\b"),
+        re.compile(r"(?i)\b(?:retry|retrying|attempt\s+(?:[2-9]|\d{2,})\s+of\s+\d+|backing off)\b"),
     ),
     # Timeouts / cancellations.
     (
